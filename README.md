@@ -1,6 +1,6 @@
 # Portfolio Analyzer
 
-Parses a Saxo Bank / Mandatum Trader portfolio PDF report, enriches it with live data from Yahoo Finance, and produces allocation analysis, risk metrics, and charts.
+Parses a portfolio report (Saxo Bank / Mandatum Trader PDF, or universal CSV), enriches it with live data from Yahoo Finance, and produces allocation analysis, risk metrics, and charts.
 
 ## Requirements
 
@@ -22,6 +22,32 @@ python portfolio_analyzer.py Portfolio_report.pdf --pick NVDA TSM ASML
 
 # Change the simulated allocation weight for candidates (default: 5%)
 python portfolio_analyzer.py Portfolio_report.pdf --pick NVDA --test-weight 0.10
+```
+
+## Supported input formats
+
+**Saxo Bank / Mandatum Trader PDF** — detected automatically from the file content.
+
+**Universal CSV** — any broker whose export can be mapped to these columns:
+
+| Column | Description |
+|---|---|
+| `instrument` | Company name |
+| `isin` | ISIN code |
+| `currency` | Position currency (e.g. `EUR`, `USD`) |
+| `quantity` | Number of shares |
+| `open_price` | Average purchase price |
+| `current_price` | Latest price |
+| `pnl_eur` | Unrealised P/L in EUR |
+| `market_value_eur` | Current market value in EUR |
+
+To include a cash balance, add a row with `isin=CASH` and set `market_value_eur` to the cash amount (all other fields can be `0`).
+
+```csv
+instrument,isin,currency,quantity,open_price,current_price,pnl_eur,market_value_eur
+Advanced Micro Devices,US0079031078,USD,100,80.00,175.50,9550.00,16092.35
+Lam Research,US5128073062,USD,20,650.00,920.00,5400.00,16856.20
+Cash,CASH,EUR,0,0,0,0,3500.00
 ```
 
 ## First run

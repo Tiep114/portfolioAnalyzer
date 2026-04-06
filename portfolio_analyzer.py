@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
 Lightweight Portfolio Analyzer
-Primary input: Saxo Bank / Mandatum Trader portfolio report PDF
+Supports Saxo Bank / Mandatum Trader PDF reports and a universal CSV format.
 Enriches with Yahoo Finance for live prices, sector, geography, and correlation.
 
 Usage:
   python portfolio_analyzer.py Portfolio_report.pdf
-  python portfolio_analyzer.py                       (auto-detects Portfolio_*.pdf)
+  python portfolio_analyzer.py portfolio.csv
+  python portfolio_analyzer.py                       (auto-detects Portfolio_*.pdf/csv)
 """
 
+from abc import ABC, abstractmethod
 import yfinance as yf
 import json
 import re
@@ -49,89 +51,184 @@ def parse_num(s):
     return float(s.strip().replace("\u00a0", "").replace(" ", "").replace("%", "").replace(",", "."))
 
 
-def parse_portfolio_pdf(pdf_path):
-    try:
-        import pdfplumber
-    except ImportError:
-        print("pdfplumber not installed. Run: pip install pdfplumber")
-        sys.exit(1)
+class PortfolioParser(ABC):
+    @abstractmethod
+    def can_parse(self, path: str) -> bool:
+        """Return True if this parser recognises the file."""
 
-    print(f"Parsing {pdf_path}...")
+    @abstractmethod
+    def parse(self, path: str) -> dict:
+        """Return {"positions": [...], "cash_eur": float, "account_value_eur": float}."""
 
-    with pdfplumber.open(pdf_path) as pdf:
-        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
 
-    lines = full_text.split("\n")
+class SaxoParser(PortfolioParser):
+    """Parses Saxo Bank / Mandatum Trader PDF portfolio reports."""
 
-    # Build line-level ISIN index
-    isin_line_map = {}
-    for i, line in enumerate(lines):
-        for m in re.finditer(r"([A-Z]{2}[A-Z0-9]{10})", line):
-            code = m.group(1)
-            if code[:2] in ISIN_COUNTRY_PREFIXES:
-                isin_line_map[i] = code
+    def can_parse(self, path: str) -> bool:
+        if Path(path).suffix.lower() != ".pdf":
+            return False
+        try:
+            import pdfplumber
+            with pdfplumber.open(path) as pdf:
+                text = (pdf.pages[0].extract_text() or "").lower()
+            return "saxo" in text or "mandatum" in text
+        except Exception:
+            return True  # Accept any PDF as a fallback
 
-    # Find data lines: start with EUR/USD, then integer quantity, then numbers
-    data_lines = []
-    for i, line in enumerate(lines):
-        if re.match(r"^(EUR|USD)\s+\d+\s+[\d,]+\s+[\d,]+\s+[\d,]+", line):
-            data_lines.append((i, line))
+    def parse(self, path: str) -> dict:
+        try:
+            import pdfplumber
+        except ImportError:
+            print("pdfplumber not installed. Run: pip install pdfplumber")
+            sys.exit(1)
 
-    # Match each data line to nearest ISIN within 3 lines
-    positions = []
-    used_isins = set()
+        print(f"Parsing {path}...")
 
-    for dl_idx, dl_text in data_lines:
-        best_isin, best_dist = None, 999
-        for il_idx, isin in isin_line_map.items():
-            dist = abs(il_idx - dl_idx)
-            if dist < best_dist and dist <= 3 and isin not in used_isins:
-                best_dist = dist
-                best_isin = isin
+        with pdfplumber.open(path) as pdf:
+            full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
 
-        if not best_isin:
-            continue
-        used_isins.add(best_isin)
+        lines = full_text.split("\n")
 
-        parts = dl_text.split()
-        currency = parts[0]
-        quantity = int(parts[1])
-        nums = re.findall(r"(-?[\d\s\u00a0]+,[\d]+)", dl_text)
+        # Build line-level ISIN index
+        isin_line_map = {}
+        for i, line in enumerate(lines):
+            for m in re.finditer(r"([A-Z]{2}[A-Z0-9]{10})", line):
+                code = m.group(1)
+                if code[:2] in ISIN_COUNTRY_PREFIXES:
+                    isin_line_map[i] = code
 
-        if len(nums) < 6:
-            continue
+        # Find data lines: start with EUR/USD, then integer quantity, then numbers
+        data_lines = []
+        for i, line in enumerate(lines):
+            if re.match(r"^(EUR|USD)\s+\d+\s+[\d,]+\s+[\d,]+\s+[\d,]+", line):
+                data_lines.append((i, line))
 
-        open_price = parse_num(nums[1])
-        current_price = parse_num(nums[2])
-        pnl = parse_num(nums[4])
-        market_val = parse_num(nums[5])
+        # Match each data line to nearest ISIN within 3 lines
+        positions = []
+        used_isins = set()
 
-        # Instrument name from line above
-        name_line = lines[dl_idx - 1] if dl_idx > 0 else ""
-        name = re.sub(r"\(ISIN:.*", "", name_line).strip()
+        for dl_idx, dl_text in data_lines:
+            best_isin, best_dist = None, 999
+            for il_idx, isin in isin_line_map.items():
+                dist = abs(il_idx - dl_idx)
+                if dist < best_dist and dist <= 3 and isin not in used_isins:
+                    best_dist = dist
+                    best_isin = isin
 
-        positions.append({
-            "instrument": name, "isin": best_isin, "currency": currency,
-            "quantity": quantity, "open_price": open_price, "current_price": current_price,
-            "pnl_eur": pnl, "market_value_eur": market_val,
-        })
+            if not best_isin:
+                continue
+            used_isins.add(best_isin)
 
-    # Cash
-    cash_eur = 0.0
-    cash_match = re.search(r"Allaccounts\s+EUR\s+([\d\s\u00a0]+,\d{2})", full_text)
-    if not cash_match:
-        cash_match = re.search(r"All accounts\s+EUR\s+([\d\s\u00a0]+,\d{2})", full_text)
-    if cash_match:
-        cash_eur = parse_num(cash_match.group(1))
+            parts = dl_text.split()
+            currency = parts[0]
+            quantity = int(parts[1])
+            nums = re.findall(r"(-?[\d\s\u00a0]+,[\d]+)", dl_text)
 
-    equity_total = sum(p["market_value_eur"] for p in positions)
-    account_value = equity_total + cash_eur
+            if len(nums) < 6:
+                continue
 
-    print(f"   Extracted {len(positions)} stock positions")
-    print(f"   Cash: EUR {cash_eur:,.2f}")
-    print(f"   Account value: EUR {account_value:,.2f}\n")
+            open_price = parse_num(nums[1])
+            current_price = parse_num(nums[2])
+            pnl = parse_num(nums[4])
+            market_val = parse_num(nums[5])
 
-    return {"positions": positions, "cash_eur": cash_eur, "account_value_eur": account_value}
+            # Instrument name from line above
+            name_line = lines[dl_idx - 1] if dl_idx > 0 else ""
+            name = re.sub(r"\(ISIN:.*", "", name_line).strip()
+
+            positions.append({
+                "instrument": name, "isin": best_isin, "currency": currency,
+                "quantity": quantity, "open_price": open_price, "current_price": current_price,
+                "pnl_eur": pnl, "market_value_eur": market_val,
+            })
+
+        # Cash
+        cash_eur = 0.0
+        cash_match = re.search(r"Allaccounts\s+EUR\s+([\d\s\u00a0]+,\d{2})", full_text)
+        if not cash_match:
+            cash_match = re.search(r"All accounts\s+EUR\s+([\d\s\u00a0]+,\d{2})", full_text)
+        if cash_match:
+            cash_eur = parse_num(cash_match.group(1))
+
+        equity_total = sum(p["market_value_eur"] for p in positions)
+        account_value = equity_total + cash_eur
+
+        print(f"   Extracted {len(positions)} stock positions")
+        print(f"   Cash: EUR {cash_eur:,.2f}")
+        print(f"   Account value: EUR {account_value:,.2f}\n")
+
+        return {"positions": positions, "cash_eur": cash_eur, "account_value_eur": account_value}
+
+
+class CsvParser(PortfolioParser):
+    """Parses a universal CSV portfolio export.
+
+    Required columns:
+      instrument, isin, currency, quantity, open_price,
+      current_price, pnl_eur, market_value_eur
+
+    Cash balance: add a row with isin=CASH (or instrument=CASH) and
+    set market_value_eur to the cash amount; all other fields can be 0.
+    """
+
+    REQUIRED_COLS = {"instrument", "isin", "currency", "quantity",
+                     "open_price", "current_price", "pnl_eur", "market_value_eur"}
+
+    def can_parse(self, path: str) -> bool:
+        return Path(path).suffix.lower() == ".csv"
+
+    def parse(self, path: str) -> dict:
+        print(f"Parsing {path}...")
+        df = pd.read_csv(path)
+        df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+        missing = self.REQUIRED_COLS - set(df.columns)
+        if missing:
+            raise ValueError(f"CSV is missing required columns: {', '.join(sorted(missing))}")
+
+        positions = []
+        cash_eur = 0.0
+
+        for _, row in df.iterrows():
+            isin = str(row["isin"]).strip()
+            instrument = str(row["instrument"]).strip()
+
+            if isin.upper() == "CASH" or instrument.upper() == "CASH":
+                cash_eur += float(row["market_value_eur"])
+                continue
+
+            positions.append({
+                "instrument": instrument,
+                "isin": isin,
+                "currency": str(row["currency"]).strip(),
+                "quantity": int(row["quantity"]),
+                "open_price": float(row["open_price"]),
+                "current_price": float(row["current_price"]),
+                "pnl_eur": float(row["pnl_eur"]),
+                "market_value_eur": float(row["market_value_eur"]),
+            })
+
+        equity_total = sum(p["market_value_eur"] for p in positions)
+        account_value = equity_total + cash_eur
+
+        print(f"   Loaded {len(positions)} positions from CSV")
+        print(f"   Cash: EUR {cash_eur:,.2f}")
+        print(f"   Account value: EUR {account_value:,.2f}\n")
+
+        return {"positions": positions, "cash_eur": cash_eur, "account_value_eur": account_value}
+
+
+PARSERS: list[PortfolioParser] = [SaxoParser(), CsvParser()]
+
+
+def load_portfolio(path: str) -> dict:
+    for parser in PARSERS:
+        if parser.can_parse(path):
+            return parser.parse(path)
+    raise ValueError(
+        f"No parser recognised '{path}'. "
+        f"Supported formats: Saxo Bank / Mandatum PDF, CSV."
+    )
 
 
 def load_isin_map():
@@ -595,29 +692,30 @@ def main():
                "  python portfolio_analyzer.py --pick NVDA TSM ASML\n"
                "  python portfolio_analyzer.py Portfolio_report.pdf --pick NVDA TSM",
     )
-    parser.add_argument("pdf", nargs="?", help="Portfolio PDF report (auto-detected if omitted)")
+    parser.add_argument("report", nargs="?",
+                        help="Portfolio report file — PDF (Saxo/Mandatum) or CSV (auto-detected if omitted)")
     parser.add_argument("--pick", nargs="+", metavar="TICKER",
                         help="Candidate ticker(s) to evaluate for diversification")
     parser.add_argument("--test-weight", type=float, default=0.05, metavar="W",
                         help="Simulated allocation for each candidate (default: 0.05)")
     args = parser.parse_args()
 
-    if args.pdf:
-        pdf_path = args.pdf
+    if args.report:
+        input_path = args.report
     else:
-        pdfs = list(Path(".").glob("Portfolio_*.pdf"))
-        if pdfs:
-            pdf_path = str(pdfs[0])
-            print(f"Auto-detected: {pdf_path}\n")
+        candidates = list(Path(".").glob("Portfolio_*.pdf")) + list(Path(".").glob("Portfolio_*.csv"))
+        if candidates:
+            input_path = str(candidates[0])
+            print(f"Auto-detected: {input_path}\n")
         else:
             parser.print_help()
             sys.exit(1)
 
-    if not Path(pdf_path).exists():
-        print(f"File not found: {pdf_path}")
+    if not Path(input_path).exists():
+        print(f"File not found: {input_path}")
         sys.exit(1)
 
-    holdings = parse_portfolio_pdf(pdf_path)
+    holdings = load_portfolio(input_path)
     isin_map = load_isin_map()
     isin_map = resolve_tickers(holdings["positions"], isin_map)
     enriched = enrich_positions(holdings["positions"], isin_map)
