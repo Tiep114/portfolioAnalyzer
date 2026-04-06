@@ -28,7 +28,7 @@ ISIN_TICKER_MAP_FILE = "isin_ticker_map.json"
 CASH_FLOWS_FILE = "cash_flows.json"
 CHARTS_FILE = "portfolio_charts.png"
 CORRELATION_CHARTS_FILE = "portfolio_correlation.png"
-PICKER_CHARTS_FILE = "portfolio_picker.png"
+EXPANDED_CORRELATION_FILE = "portfolio_correlation_expanded.png"
 
 DEFAULT_ISIN_MAP = {
     "US0079031078": "AMD",
@@ -529,127 +529,152 @@ def generate_correlation_charts(corr_data):
     print(f"   Correlation charts saved to {CORRELATION_CHARTS_FILE}")
 
 
-def generate_picker_chart(results, corr_data):
-    existing_tickers = corr_data["tickers"]
-    n_cands = len(results)
-    fig_h = max(5, n_cands * 1.0 + 3)
-    fig, axes = plt.subplots(1, 2, figsize=(16, fig_h), facecolor="white",
-                             gridspec_kw={"width_ratios": [1, 1.4], "wspace": 0.45})
-    fig.suptitle("Stock Picker  —  Diversification Analysis",
-                 fontsize=14, fontweight="bold", y=0.98)
+def compute_expanded_corr(candidates, corr_data):
+    """Download candidate price history and build a combined correlation dataset."""
+    end_date = date.today()
+    start_date = end_date - timedelta(days=365)
+    print(f"Fetching price history for candidates: {', '.join(candidates)}...")
+    try:
+        raw = yf.download(
+            candidates, start=start_date.isoformat(), end=end_date.isoformat(),
+            auto_adjust=True, progress=False,
+        )["Close"]
+        if isinstance(raw, pd.Series):
+            raw = raw.to_frame(name=candidates[0])
+    except Exception as e:
+        print(f"   Failed to fetch candidate prices: {e}")
+        return None
 
-    # Left: average correlation per candidate
+    if raw.empty:
+        return None
+
+    valid_candidates = [c for c in raw.columns if raw[c].dropna().shape[0] >= 60]
+    dropped = set(raw.columns) - set(valid_candidates)
+    if dropped:
+        print(f"   Insufficient data for: {', '.join(str(d) for d in dropped)}")
+    if not valid_candidates:
+        return None
+
+    cand_returns = np.log(raw[valid_candidates] / raw[valid_candidates].shift(1)).dropna()
+    combined = corr_data["returns"].join(cand_returns, how="inner")
+    if combined.shape[0] < 60:
+        print("   Not enough overlapping trading days for expanded matrix.")
+        return None
+
+    print(f"   Expanded matrix: {len(combined.columns)} stocks, {combined.shape[0]} trading days\n")
+    return {
+        "corr_matrix": combined.corr(),
+        "ann_vol": combined.std() * np.sqrt(252),
+        "returns": combined,
+        "existing_tickers": corr_data["tickers"],
+        "candidate_tickers": valid_candidates,
+        "all_tickers": list(combined.columns),
+        "trading_days": combined.shape[0],
+        "weights": corr_data["weights"],
+        "port_vol": corr_data["port_vol"],
+    }
+
+
+def generate_expanded_correlation_chart(expanded_data):
+    """Plot the full correlation matrix (existing + candidates) with candidates highlighted."""
+    corr = expanded_data["corr_matrix"]
+    all_tickers = expanded_data["all_tickers"]
+    candidate_tickers = expanded_data["candidate_tickers"]
+    ann_vol = expanded_data["ann_vol"]
+    n = len(all_tickers)
+
+    fig, axes = plt.subplots(1, 2, figsize=(max(16, n * 1.3), 7), facecolor="white",
+                             gridspec_kw={"width_ratios": [1.4, 1], "wspace": 0.40})
+    fig.suptitle(
+        f"Expanded Correlation  —  existing + candidates  ({expanded_data['trading_days']} days)",
+        fontsize=14, fontweight="bold", y=0.97,
+    )
+
+    # Left: full pairwise correlation heatmap
     ax1 = axes[0]
-    cand_labels = [r["ticker"] for r in results]
-    avg_corrs = [r["avg_corr"] for r in results]
-    bar_colors = ["#16a34a" if c < 0.3 else ("#ca8a04" if c < 0.6 else "#dc2626")
-                  for c in avg_corrs]
-    y = np.arange(n_cands)
-    bars = ax1.barh(y, avg_corrs, color=bar_colors, edgecolor="white", height=0.5, alpha=0.88)
-    ax1.set_yticks(y)
-    ax1.set_yticklabels(cand_labels, fontsize=10)
-    ax1.set_xlim(0, 1.0)
-    ax1.set_xlabel("Average Correlation with Portfolio", fontsize=9)
-    ax1.set_title("Avg Correlation  (lower = better)", fontsize=11, fontweight="bold", pad=10)
-    ax1.axvline(0.3, color="#16a34a", linestyle="--", linewidth=1, alpha=0.7, label="Good fit  (<0.30)")
-    ax1.axvline(0.6, color="#dc2626", linestyle="--", linewidth=1, alpha=0.7, label="High overlap  (>0.60)")
-    ax1.spines[["top", "right"]].set_visible(False)
-    ax1.legend(fontsize=8, loc="lower right")
-    for bar, r in zip(bars, results):
-        label = f"{r['avg_corr']:.2f}   vol {r['vol_delta']:+.1f}%"
-        ax1.text(min(bar.get_width() + 0.02, 0.98), bar.get_y() + bar.get_height() / 2,
-                 label, va="center", fontsize=8, color="#374151")
+    im = ax1.imshow(corr.values, cmap=plt.cm.RdYlGn_r, vmin=-1, vmax=1, aspect="equal")
+    ax1.set_xticks(range(n))
+    ax1.set_yticks(range(n))
+    x_labels = ax1.set_xticklabels(all_tickers, fontsize=9, rotation=45, ha="right")
+    y_labels = ax1.set_yticklabels(all_tickers, fontsize=9)
+    for lbl in list(x_labels) + list(y_labels):
+        if lbl.get_text() in candidate_tickers:
+            lbl.set_color("#ea580c")
+            lbl.set_fontweight("bold")
+    for i in range(n):
+        for j in range(n):
+            val = corr.iloc[i, j]
+            txt_color = "white" if abs(val) > 0.6 else "black"
+            ax1.text(j, i, f"{val:.2f}", ha="center", va="center",
+                     fontsize=8, fontweight="bold" if i == j else "normal", color=txt_color)
+    fig.colorbar(im, ax=ax1, fraction=0.046, pad=0.04).set_label("Correlation", fontsize=9)
+    ax1.set_title("Pairwise Correlation  (orange = candidates)",
+                  fontsize=11, fontweight="bold", pad=12)
 
-    # Right: per-holding correlation heatmap  (candidates × existing)
+    # Right: individual annualised volatility for all stocks
     ax2 = axes[1]
-    matrix = np.array([[r["pair_corrs"].get(t, np.nan) for t in existing_tickers]
-                       for r in results])
-    im = ax2.imshow(matrix, cmap=plt.cm.RdYlGn_r, vmin=-1, vmax=1, aspect="auto")
-    ax2.set_xticks(range(len(existing_tickers)))
-    ax2.set_yticks(range(n_cands))
-    ax2.set_xticklabels(existing_tickers, fontsize=9, rotation=45, ha="right")
-    ax2.set_yticklabels(cand_labels, fontsize=9)
-    for i in range(n_cands):
-        for j in range(len(existing_tickers)):
-            val = matrix[i, j]
-            if not np.isnan(val):
-                txt_color = "white" if abs(val) > 0.6 else "black"
-                ax2.text(j, i, f"{val:.2f}", ha="center", va="center",
-                         fontsize=9, color=txt_color)
-    fig.colorbar(im, ax=ax2, fraction=0.046, pad=0.04).set_label("Correlation", fontsize=9)
-    ax2.set_title("Candidate vs Each Holding", fontsize=11, fontweight="bold", pad=10)
+    vols = ann_vol.reindex(all_tickers) * 100
+    bar_colors = ["#ea580c" if t in candidate_tickers else "#2563eb" for t in all_tickers]
+    ax2.bar(range(n), vols, color=bar_colors, alpha=0.85, edgecolor="white")
+    ax2.set_xticks(range(n))
+    ax2.set_xticklabels(all_tickers, fontsize=9, rotation=45, ha="right")
+    ax2.set_ylabel("Annualised Volatility (%)", fontsize=9)
+    ax2.set_title("Individual Volatility", fontsize=11, fontweight="bold", pad=12)
+    ax2.spines[["top", "right"]].set_visible(False)
+    from matplotlib.patches import Patch
+    ax2.legend(handles=[Patch(color="#2563eb", label="Existing holding"),
+                        Patch(color="#ea580c", label="Candidate")],
+               fontsize=8, loc="upper right")
 
-    plt.savefig(PICKER_CHARTS_FILE, dpi=150, bbox_inches="tight")
-    print(f"   Picker chart saved to {PICKER_CHARTS_FILE}")
+    plt.savefig(EXPANDED_CORRELATION_FILE, dpi=150, bbox_inches="tight")
+    print(f"   Expanded correlation chart saved to {EXPANDED_CORRELATION_FILE}")
 
 
 def pick_stocks(candidates, corr_data, enriched, test_weight=0.05):
     """Compare candidate tickers against existing portfolio for diversification."""
-    existing_returns = corr_data["returns"]
-    end_date = date.today()
-    start_date = end_date - timedelta(days=365)
+    expanded_data = compute_expanded_corr(candidates, corr_data)
+    if not expanded_data:
+        print("No valid candidates to compare.")
+        return None
 
+    existing_tickers = corr_data["tickers"]
+    combined = expanded_data["returns"]
     results = []
-    for ticker in candidates:
-        print(f"Analyzing candidate: {ticker}...")
+
+    for ticker in expanded_data["candidate_tickers"]:
+        valid_existing = [t for t in existing_tickers if t in combined.columns]
+        pair_corrs = {t: combined[ticker].corr(combined[t]) for t in valid_existing}
+        avg_corr = float(np.mean(list(pair_corrs.values())))
+
+        sim_cov = combined[valid_existing + [ticker]].cov() * 252
+        total_w = sum(corr_data["weights"][existing_tickers.index(t)] for t in valid_existing)
+        sim_w = np.array(
+            [corr_data["weights"][existing_tickers.index(t)] / total_w * (1 - test_weight)
+             for t in valid_existing]
+            + [test_weight]
+        )
+        sim_vol = float(np.sqrt(sim_w @ sim_cov.values @ sim_w))
+
         try:
-            raw = yf.download(
-                ticker, start=start_date.isoformat(), end=end_date.isoformat(),
-                auto_adjust=True, progress=False,
-            )["Close"]
-            prices = raw.squeeze() if isinstance(raw, pd.DataFrame) else raw
-            if prices.dropna().shape[0] < 60:
-                print(f"   Insufficient price history for {ticker}, skipping.")
-                continue
+            info = yf.Ticker(ticker).info
+            name = info.get("longName") or info.get("shortName", ticker)
+            sector = info.get("sector", "Unknown")
+        except Exception:
+            name, sector = ticker, "Unknown"
 
-            cand_returns = np.log(prices / prices.shift(1)).dropna()
-            cand_returns.name = ticker
-
-            combined = existing_returns.join(cand_returns, how="inner")
-            if combined.shape[0] < 60:
-                print(f"   Not enough overlapping trading days for {ticker}, skipping.")
-                continue
-
-            existing_cols = [c for c in combined.columns if c != ticker]
-            pair_corrs = {t: combined[ticker].corr(combined[t]) for t in existing_cols}
-            avg_corr = float(np.mean(list(pair_corrs.values())))
-
-            # Simulate portfolio vol with candidate at test_weight
-            existing_tickers = corr_data["tickers"]
-            valid_existing = [t for t in existing_tickers if t in combined.columns]
-            sim_returns = combined[valid_existing + [ticker]]
-            sim_cov = sim_returns.cov() * 252
-
-            total_w = sum(corr_data["weights"][existing_tickers.index(t)] for t in valid_existing)
-            sim_w = np.array(
-                [corr_data["weights"][existing_tickers.index(t)] / total_w * (1 - test_weight)
-                 for t in valid_existing]
-                + [test_weight]
-            )
-            sim_vol = float(np.sqrt(sim_w @ sim_cov.values @ sim_w))
-            vol_delta = (sim_vol - corr_data["port_vol"]) * 100
-
-            try:
-                info = yf.Ticker(ticker).info
-                name = info.get("longName") or info.get("shortName", ticker)
-                sector = info.get("sector", "Unknown")
-            except Exception:
-                name, sector = ticker, "Unknown"
-
-            results.append({
-                "ticker": ticker, "name": name, "sector": sector,
-                "avg_corr": avg_corr, "pair_corrs": pair_corrs,
-                "sim_vol": sim_vol, "vol_delta": vol_delta,
-            })
-        except Exception as e:
-            print(f"   Error analyzing {ticker}: {e}")
+        results.append({
+            "ticker": ticker, "name": name, "sector": sector,
+            "avg_corr": avg_corr, "pair_corrs": pair_corrs,
+            "sim_vol": sim_vol, "vol_delta": (sim_vol - corr_data["port_vol"]) * 100,
+        })
 
     if not results:
         print("No valid candidates to compare.")
-        return
+        return expanded_data
 
     results.sort(key=lambda x: x["avg_corr"])
     print_stock_pick_report(results, corr_data, test_weight)
+    return expanded_data
 
 
 def print_stock_pick_report(results, corr_data, test_weight):
@@ -742,7 +767,9 @@ def main():
             print("Cannot run stock picker: correlation matrix unavailable "
                   "(need >= 2 positions with sufficient history).")
             sys.exit(1)
-        pick_stocks(args.pick, corr_data, enriched, test_weight=args.test_weight)
+        expanded_data = pick_stocks(args.pick, corr_data, enriched, test_weight=args.test_weight)
+        if expanded_data:
+            generate_expanded_correlation_chart(expanded_data)
 
     plt.show()
 
