@@ -301,15 +301,18 @@ def resolve_tickers(positions, isin_map):
     if unmapped:
         print("--- Unmapped ISINs ---")
         print("Suggestions from OpenFIGI shown where available.")
-        print("Press Enter to accept, type to override, or leave blank to skip.\n")
+        print("Press Enter to accept a suggestion, type to override, or leave blank to skip.\n")
         for name, isin in unmapped:
             suggestion = _fetch_openfigi_ticker(isin)
             if suggestion:
-                prompt = f"  {name} ({isin})\n  Suggestion: {suggestion}\n  Accept [Enter] or override (blank to skip): "
+                prompt = f"  {name} ({isin})\n  Suggestion: {suggestion}\n  Accept [Enter], override with ticker, or '-' to skip: "
             else:
                 prompt = f"  {name} ({isin}) -> "
             user_input = input(prompt).strip()
-            ticker = user_input if user_input else suggestion
+            if suggestion:
+                ticker = None if user_input == "-" else (user_input or suggestion)
+            else:
+                ticker = user_input or None
             if ticker:
                 updated[isin] = ticker
         save_isin_map(updated)
