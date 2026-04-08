@@ -76,7 +76,7 @@ Press **Enter** to accept the suggestion, type a different ticker to override, o
 |---|---|
 | `portfolio_charts.png` | Holdings by value, sector and geography allocation |
 | `portfolio_correlation.png` | Pairwise correlation heatmap, weight vs risk contribution |
-| `portfolio_picker.png` | Candidate diversification scores and per-holding correlations |
+| `portfolio_correlation_expanded.png` | Candidate diversification scores and per-holding correlations |
 
 <img width="900" alt="portfolio_correlation" src="https://github.com/user-attachments/assets/d74c16af-1806-4444-a078-960c63ee9670" />
 
