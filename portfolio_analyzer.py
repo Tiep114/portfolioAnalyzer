@@ -220,7 +220,70 @@ class CsvParser(PortfolioParser):
         return {"positions": positions, "cash_eur": cash_eur, "account_value_eur": account_value}
 
 
-PARSERS: list[PortfolioParser] = [SaxoParser(), CsvParser()]
+class NordeaXlsxParser(PortfolioParser):
+    """Parses Nordea portfolio exports (Holdings sheet from Omistukset.xlsx)."""
+
+    def can_parse(self, path: str) -> bool:
+        if Path(path).suffix.lower() != ".xlsx":
+            return False
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            if "Holdings" not in wb.sheetnames:
+                return False
+            ws = wb["Holdings"]
+            rows = list(ws.iter_rows(min_row=2, max_row=2, values_only=True))
+            return bool(rows and rows[0][0] == "Type" and rows[0][1] == "AccountKey")
+        except Exception:
+            return False
+
+    def parse(self, path: str) -> dict:
+        try:
+            import openpyxl
+        except ImportError:
+            print("openpyxl not installed. Run: pip install openpyxl")
+            sys.exit(1)
+
+        print(f"Parsing {path}...")
+        wb = openpyxl.load_workbook(path, data_only=True)
+        ws = wb["Holdings"]
+        rows = list(ws.iter_rows(values_only=True))
+
+        # Row 0 = timestamp, Row 1 = headers
+        headers = {name: idx for idx, name in enumerate(rows[1]) if name is not None}
+
+        def col(row, name):
+            return row[headers[name]]
+
+        positions, cash_eur = [], 0.0
+        for row in rows[2:]:
+            row_type = row[0]
+            if row_type == "Custody":
+                isin = col(row, "ISIN")
+                if not isin:
+                    continue
+                positions.append({
+                    "instrument": col(row, "NAME") or "",
+                    "isin": str(isin).strip(),
+                    "currency": col(row, "CURRENCY") or "EUR",
+                    "quantity": int(col(row, "HOLDINGS") or 0),
+                    "open_price": float(col(row, "Average purchase price") or 0),
+                    "current_price": float(col(row, "PRICE") or 0),
+                    "pnl_eur": float(col(row, "Value change on account level") or 0),
+                    "market_value_eur": float(col(row, "Value on account level") or 0),
+                })
+            elif row_type == "CashAccount":
+                cash_eur += float(col(row, "Value on account level") or 0)
+
+        equity_total = sum(p["market_value_eur"] for p in positions)
+        account_value = equity_total + cash_eur
+        print(f"   Extracted {len(positions)} positions")
+        print(f"   Cash: EUR {cash_eur:,.2f}")
+        print(f"   Account value: EUR {account_value:,.2f}\n")
+        return {"positions": positions, "cash_eur": cash_eur, "account_value_eur": account_value}
+
+
+PARSERS: list[PortfolioParser] = [SaxoParser(), NordeaXlsxParser(), CsvParser()]
 
 
 def load_portfolio(path: str) -> dict:

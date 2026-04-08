@@ -34,6 +34,8 @@ python portfolio_analyzer.py Portfolio_report.pdf --start 2022-06-01
 
 **Saxo Bank / Mandatum Trader PDF** — detected automatically from the file content.
 
+**Nordea xlsx** — export from Nordea Netbank → Portfolio → Download (saves as `Omistukset.xlsx` or similar). The file must contain a `Holdings` sheet in the standard Nordea format. Detected automatically.
+
 **Universal CSV** — any broker whose export can be mapped to these columns:
 
 | Column | Description |
