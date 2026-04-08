@@ -5,7 +5,7 @@ Parses a portfolio report (Saxo Bank / Mandatum Trader PDF, Nordea xlsx or unive
 ## Requirements
 
 ```bash
-pip install yfinance pdfplumber pandas numpy matplotlib scipy
+pip install yfinance pdfplumber pandas numpy matplotlib scipy openpyxl
 ```
 
 ## Usage
