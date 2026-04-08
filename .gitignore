@@ -2,6 +2,7 @@
 Portfolio_*.pdf
 *.pdf
 Portfolio_*.csv
+*.xlsx
 
 # Personal data
 cash_flows.json
