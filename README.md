@@ -1,6 +1,6 @@
 # Portfolio Analyzer
 
-Parses a portfolio report (Saxo Bank / Mandatum Trader PDF, Nordea xlsx or universal CSV), enriches it with live data from Yahoo Finance, and produces allocation analysis, risk metrics, and charts.
+Parses a portfolio report (Saxo Bank / Mandatum Trader PDF, Nordnet PDF, Nordea xlsx, or universal CSV), enriches it with live data from Yahoo Finance, and produces allocation analysis, risk metrics, and charts.
 
 ## Requirements
 
@@ -33,6 +33,8 @@ python portfolio_analyzer.py Portfolio_report.pdf --start 2022-06-01
 ## Supported input formats
 
 **Saxo Bank / Mandatum Trader PDF** — detected automatically from the file content.
+
+**Nordnet PDF** — the *Salkkuraportti* (Finnish) or *Portfolio report* (English) PDF exported from Nordnet. Detected automatically from the file content.
 
 **Nordea xlsx** — export from Nordea Netbank → Portfolio → Download (saves as `Omistukset.xlsx` or similar). The file must contain a `Holdings` sheet in the standard Nordea format. Detected automatically.
 
