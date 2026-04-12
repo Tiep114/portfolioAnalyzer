@@ -88,7 +88,7 @@ class SaxoParser(PortfolioParser):
                 text = (pdf.pages[0].extract_text() or "").lower()
             return "saxo" in text or "mandatum" in text
         except Exception:
-            return True  # Accept any PDF as a fallback
+            return False  # Can't read PDF → not a Saxo report
 
     def parse(self, path: str) -> dict:
         if pdfplumber is None:
@@ -214,7 +214,7 @@ class CsvParser(PortfolioParser):
                 "instrument": instrument,
                 "isin": isin,
                 "currency": str(row["currency"]).strip(),
-                "quantity": int(row["quantity"]),
+                "quantity": float(row["quantity"]),
                 "open_price": float(row["open_price"]),
                 "current_price": float(row["current_price"]),
                 "pnl_eur": float(row["pnl_eur"]),
@@ -517,8 +517,7 @@ def resolve_tickers(positions, isin_map):
 
     unmapped = [(p["instrument"], _map_key(p)) for p in positions if _map_key(p) not in updated]
     if not unmapped:
-        if not Path(ISIN_TICKER_MAP_FILE).exists():
-            save_isin_map(updated)
+        save_isin_map(updated)
         return updated
 
     # ── Name-based positions (no ISIN): auto-resolve via Yahoo Finance search ──
@@ -633,9 +632,9 @@ def analyze_allocation(enriched, cash_eur):
         "total_portfolio_eur": total_portfolio, "total_equity_eur": total_equity,
         "cash_eur": cash_eur,
         "cash_pct": cash_eur / total_portfolio * 100 if total_portfolio else 0,
-        "sector": {k: {"value_eur": v, "pct": v / total_equity * 100}
+        "sector": {k: {"value_eur": v, "pct": v / total_equity * 100 if total_equity else 0}
                    for k, v in sorted(sector_alloc.items(), key=lambda x: -x[1])},
-        "geography": {k: {"value_eur": v, "pct": v / total_equity * 100}
+        "geography": {k: {"value_eur": v, "pct": v / total_equity * 100 if total_equity else 0}
                       for k, v in sorted(geo_alloc.items(), key=lambda x: -x[1])},
     }
 
@@ -1003,6 +1002,9 @@ def pick_stocks(candidates, corr_data, enriched, test_weight=0.05, start_date=No
 
     for ticker in expanded_data["candidate_tickers"]:
         valid_existing = [t for t in existing_tickers if t in combined.columns]
+        if not valid_existing:
+            print(f"   Skipping {ticker}: no overlapping holdings in price data")
+            continue
         pair_corrs = {t: combined[ticker].corr(combined[t]) for t in valid_existing}
         avg_corr = float(np.mean(list(pair_corrs.values())))
         max_corr_ticker = max(pair_corrs, key=pair_corrs.get)
@@ -1010,6 +1012,9 @@ def pick_stocks(candidates, corr_data, enriched, test_weight=0.05, start_date=No
 
         sim_cov = combined[valid_existing + [ticker]].cov() * 252
         total_w = sum(corr_data["weights"][existing_tickers.index(t)] for t in valid_existing)
+        if total_w == 0:
+            print(f"   Skipping {ticker}: zero weight in valid existing tickers")
+            continue
         sim_w = np.array(
             [corr_data["weights"][existing_tickers.index(t)] / total_w * (1 - test_weight)
              for t in valid_existing]
