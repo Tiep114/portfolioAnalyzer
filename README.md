@@ -1,6 +1,6 @@
 # Portfolio Analyzer
 
-Parses a portfolio report (Saxo Bank / Mandatum Trader PDF, Nordnet PDF, Nordea xlsx, or universal CSV), enriches it with live data from Yahoo Finance, and produces allocation analysis, risk metrics, and charts.
+Parses a portfolio report (Saxo Bank / Mandatum Trader PDF, Nordnet PDF, Nordea xlsx, or universal CSV), enriches it with live data from Yahoo Finance, and produces allocation analysis, risk metrics, and a correlation matrix.
 
 ## Requirements
 
